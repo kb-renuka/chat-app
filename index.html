@@ -34,11 +34,17 @@ body { background: #0f172a; color: #e2e8f0; height: 100vh; overflow: hidden; }
 .chat-main { flex: 1; display: flex; flex-direction: column; }
 .chat-header { padding: 18px 24px; border-bottom: 1px solid #334155; display: flex; justify-content: space-between; align-items: center; }
 .typing-indicator { font-size: 12px; color: #818cf8; font-style: italic; min-height: 16px; }
+.toast-error { position: fixed; top: 20px; right: 20px; background: #dc2626; color: white; padding: 12px 18px; border-radius: 8px; font-size: 13px; z-index: 200; max-width: 300px; box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
 .messages-area { flex: 1; overflow-y: auto; padding: 24px; display: flex; flex-direction: column; gap: 14px; }
-.message { max-width: 60%; padding: 10px 14px; border-radius: 12px; font-size: 14px; line-height: 1.4; word-wrap: break-word; }
-.message.own { align-self: flex-end; background: #6366f1; color: white; border-bottom-right-radius: 2px; }
-.message.other { align-self: flex-start; background: #334155; border-bottom-left-radius: 2px; }
+.message-row { display: flex; flex-direction: column; max-width: 60%; }
+.message-row.own { align-self: flex-end; align-items: flex-end; }
+.message-row.other { align-self: flex-start; align-items: flex-start; }
+.message { padding: 10px 14px; border-radius: 12px; font-size: 14px; line-height: 1.4; word-wrap: break-word; position: relative; }
+.message.own { background: #6366f1; color: white; border-bottom-right-radius: 2px; }
+.message.other { background: #334155; border-bottom-left-radius: 2px; }
 .message .meta { font-size: 11px; opacity: 0.7; margin-bottom: 4px; font-weight: 600; }
+.delete-btn { font-size: 11px; color: #64748b; background: none; border: none; cursor: pointer; margin-top: 2px; padding: 2px 4px; }
+.delete-btn:hover { color: #f87171; }
 .system-message { align-self: center; font-size: 12px; color: #64748b; font-style: italic; }
 .message-form { display: flex; padding: 18px; gap: 10px; border-top: 1px solid #334155; }
 .message-form input { flex: 1; padding: 12px 16px; border-radius: 24px; border: 1px solid #334155; background: #0f172a; color: #e2e8f0; outline: none; font-size: 14px; }
@@ -47,7 +53,7 @@ body { background: #0f172a; color: #e2e8f0; height: 100vh; overflow: hidden; }
 .message-form button:hover { background: #4f46e5; }
 @media (max-width: 700px) {
   .sidebar { position: absolute; z-index: 10; height: 100%; width: 200px; transform: translateX(-100%); }
-  .message { max-width: 80%; }
+  .message-row { max-width: 80%; }
 }
 </style>
 </head>
@@ -168,6 +174,7 @@ body { background: #0f172a; color: #e2e8f0; height: 100vh; overflow: hidden; }
       currentUsernameEl.textContent = username;
       loadHistory();
       socket = io({ auth: { token } });
+
       socket.on('connect_error', () => addSystemMessage('Connection error — please refresh.'));
       socket.on('onlineUsers', (users) => renderOnlineUsers(users));
       socket.on('receiveMessage', (msg) => addMessage(msg, msg.from === username));
@@ -175,6 +182,8 @@ body { background: #0f172a; color: #e2e8f0; height: 100vh; overflow: hidden; }
       socket.on('userLeft', (data) => addSystemMessage(`${data.username} left the chat`));
       socket.on('userTyping', (data) => { typingIndicator.textContent = `${data.username} is typing...`; });
       socket.on('userStopTyping', () => { typingIndicator.textContent = ''; });
+      socket.on('messageDeleted', (data) => removeMessageFromDOM(data.id));
+      socket.on('errorMessage', (data) => showToast(data.error));
     }
 
     async function loadHistory() {
@@ -197,12 +206,37 @@ body { background: #0f172a; color: #e2e8f0; height: 100vh; overflow: hidden; }
     }
 
     function addMessage(msg, isOwn) {
-      const div = document.createElement('div');
-      div.className = `message ${isOwn ? 'own' : 'other'}`;
+      const row = document.createElement('div');
+      row.className = `message-row ${isOwn ? 'own' : 'other'}`;
+      row.dataset.messageId = msg.id || msg._id || '';
+
       const time = new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      div.innerHTML = `<div class="meta">${isOwn ? 'You' : escapeHtml(msg.from)} • ${time}</div><div>${escapeHtml(msg.text)}</div>`;
-      messagesArea.appendChild(div);
+
+      const bubble = document.createElement('div');
+      bubble.className = `message ${isOwn ? 'own' : 'other'}`;
+      bubble.innerHTML = `
+        <div class="meta">${isOwn ? 'You' : escapeHtml(msg.from)} • ${time}</div>
+        <div class="msg-text">${escapeHtml(msg.text)}</div>
+      `;
+      row.appendChild(bubble);
+
+      if (isOwn && (msg.id || msg._id)) {
+        const delBtn = document.createElement('button');
+        delBtn.className = 'delete-btn';
+        delBtn.textContent = 'Delete';
+        delBtn.addEventListener('click', () => {
+          if (socket) socket.emit('deleteMessage', msg.id || msg._id);
+        });
+        row.appendChild(delBtn);
+      }
+
+      messagesArea.appendChild(row);
       messagesArea.scrollTop = messagesArea.scrollHeight;
+    }
+
+    function removeMessageFromDOM(messageId) {
+      const row = document.querySelector(`[data-message-id="${messageId}"]`);
+      if (row) row.remove();
     }
 
     function addSystemMessage(text) {
@@ -211,6 +245,14 @@ body { background: #0f172a; color: #e2e8f0; height: 100vh; overflow: hidden; }
       div.textContent = text;
       messagesArea.appendChild(div);
       messagesArea.scrollTop = messagesArea.scrollHeight;
+    }
+
+    function showToast(text) {
+      const toast = document.createElement('div');
+      toast.className = 'toast-error';
+      toast.textContent = text;
+      document.body.appendChild(toast);
+      setTimeout(() => toast.remove(), 3500);
     }
 
     messageForm.addEventListener('submit', (e) => {
